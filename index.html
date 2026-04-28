@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#0a0a0a" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="EXPENSE LOG" />
+<title>EXPENSE LOG</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<link rel="icon" href="icon-192.png" />
+<style>
+  html, body { margin: 0; padding: 0; background: #0a0a0a; overscroll-behavior: none; }
+  #root { min-height: 100vh; }
+  body { -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; }
+</style>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+window.storage = {
+  get: async (key) => {
+    const v = localStorage.getItem(key);
+    if (v === null) return null;
+    return { key, value: v };
+  },
+  set: async (key, value) => {
+    localStorage.setItem(key, value);
+    return { key, value };
+  },
+  delete: async (key) => {
+    localStorage.removeItem(key);
+    return { key, deleted: true };
+  },
+};
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(err => console.log('SW failed', err));
+  });
+}
+</script>
+
+<script type="text/babel" data-presets="react" data-type="module">
+const { useState, useEffect, useMemo } = React;
+
+// ====== DEFAULT CATEGORIES ======
+const defaultCategories = [
+  { id: "food", name: "Food & Dining", icon: "🍽", color: "#FF6B35", budget: 0 },
+  { id: "groceries", name: "Groceries", icon: "🛒", color: "#4ECDC4", budget: 0 },
+  { id: "fruits", name: "Fruits", icon: "🍎", color: "#F472B6", budget: 0 },
+  { id: "vegetables", name: "Vegetables", icon: "🥬", color: "#34D399", budget: 0 },
+  { id: "petrol", name: "Petrol / Fuel", icon: "⛽", color: "#A78BFA", budget: 0 },
+  { id: "medical", name: "Medical", icon: "💊", color: "#FF6B6B", budget: 0 },
+  { id: "transport", name: "Transport", icon: "🚗", color: "#FFE66D", budget: 0 },
+  { id: "utilities", name: "Utilities", icon: "💡", color: "#60A5FA", budget: 0 },
+  { id: "shopping", name: "Shopping", icon: "🛍", color: "#EC4899", budget: 0 },
+  { id: "entertainment", name: "Entertainment", icon: "🎬", color: "#8B5CF6", budget: 0 },
+  { id: "other", name: "Other", icon: "📦", color: "#94A3B8", budget: 0 },
+];
+
+const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const monthShort = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const dayShort = ["S","M","T","W","T","F","S"];
+
+const fmtDate = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+const fmtMoney = (n, currency = "₹") => `${currency}${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtMoneyShort = (n, currency = "₹") => {
+  if (n >= 100000) return `${currency}${(n/100000).toFixed(1)}L`;
+  if (n >= 1000) return `${currency}${(n/1000).toFixed(1)}k`;
+  return `${currency}${Math.round(n)}`;
+};
+
+function ExpenseLog() {
+  const [view, setView] = useState("today");
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [calendarMonth, setCalendarMonth] = useState(new Date());
+  const [expenses, setExpenses] = useState([]); // [{ id, date, categoryId, amount, note }]
+  const [categories, setCategories] = useState(defaultCategories);
+  const [profile, setProfile] = useState({ currency: "₹", monthlyBudget: 0 });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [editingExpense, setEditingExpense] = useState(null);
+  const [showAddForm, setShowAddForm] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [e, c, p] = await Promise.all([
+          window.storage.get("expenses").catch(() => null),
+          window.storage.get("categories").catch(() => null),
+          window.storage.get("profile").catch(() => null),
+        ]);
+        if (e?.value) setExpenses(JSON.parse(e.value));
+        if (c?.value) setCategories(JSON.parse(c.value));
+        if (p?.value) setProfile(JSON.parse(p.value));
+      } catch {}
+      setLoading(false);
+    })();
+  }, []);
+
+  const saveData = async (key, value) => {
+    setSaving(true);
+    try { await window.storage.set(key, JSON.stringify(value)); } catch {}
+    setTimeout(() => setSaving(false), 400);
+  };
+
+  const addExpense = (entry) => {
+    const newExp = { ...entry, id: Date.now() };
+    const updated = [...expenses, newExp];
+    setExpenses(updated);
+    saveData("expenses", updated);
+  };
+
+  const updateExpense = (id, updates) => {
+    const updated = expenses.map(e => e.id === id ? { ...e, ...updates } : e);
+    setExpenses(updated);
+    saveData("expenses", updated);
+  };
+
+  const deleteExpense = (id) => {
+    const updated = expenses.filter(e => e.id !== id);
+    setExpenses(updated);
+    saveData("expenses", updated);
+  };
+
+  const updateCategories = (newCats) => {
+    setCategories(newCats);
+    saveData("categories", newCats);
+  };
+
+  const updateProfile = (newProfile) => {
+    setProfile(newProfile);
+    saveData("profile", newProfile);
+  };
+
+  const today = new Date();
+  const isToday = fmtDate(today) === fmtDate(selectedDate);
+  const currency = profile.currency || "₹";
+
+  if (loading) return <div style={{minHeight:"100vh",background:"#0a0a0a",color:"#666",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"monospace"}}>Loading...</div>;
+
+  return (
+    <div style={{minHeight:"100vh",background:"#0a0a0a",fontFamily:"'DM Mono','Courier New',monospace",color:"#e8e8e8",paddingBottom:90}}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Bebas+Neue&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+        button, input, select { font-family: inherit; }
+        button { cursor: pointer; }
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track { background: #111; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+        @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+        .fade-in { animation: fadeIn 0.25s ease forwards; }
+        .ex-row:active { transform: scale(0.99); }
+        input, select, textarea {
+          background: #1a1a1a; border: 1px solid #2a2a2a; color: #e8e8e8;
+          padding: 10px 12px; border-radius: 4px; font-size: 13px; width: 100%;
+        }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: #34D399; }
+      `}</style>
+
+      <div style={{padding:"20px 20px 10px",maxWidth:720,margin:"0 auto"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+          <div>
+            <div style={{fontSize:9,letterSpacing:5,color:"#555"}}>DAILY · WEEKLY · MONTHLY</div>
+            <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:36,lineHeight:1,color:"#fff",letterSpacing:2,marginTop:2}}>EXPENSE LOG</div>
+          </div>
+          <button onClick={()=>{setShowAddForm(true);setEditingExpense(null);}}
+            style={{background:"#34D399",color:"#000",border:"none",borderRadius:99,padding:"10px 16px",fontSize:11,letterSpacing:2,fontWeight:700}}>
+            + ADD
+          </button>
+        </div>
+      </div>
+
+      <div style={{display:"flex",gap:3,padding:"0 16px",maxWidth:720,margin:"0 auto 14px",overflowX:"auto"}}>
+        {[
+          {id:"today",label:"DAILY"},
+          {id:"week",label:"WEEK"},
+          {id:"month",label:"MONTH"},
+          {id:"year",label:"YEAR"},
+          {id:"calendar",label:"CAL"},
+          {id:"settings",label:"SET"},
+        ].map(t=>(
+          <button key={t.id} onClick={()=>setView(t.id)} style={{
+            flex:1,padding:"10px 6px",minWidth:50,
+            background:view===t.id?"#1a1a1a":"transparent",
+            color:view===t.id?"#fff":"#555",
+            fontSize:9,letterSpacing:2,
+            border:`1px solid ${view===t.id?"#333":"#1a1a1a"}`,
+            borderRadius:4,
+          }}>{t.label}</button>
+        ))}
+      </div>
+
+      {view==="today" && <DailyView {...{selectedDate,setSelectedDate,isToday,expenses,categories,currency,onEdit:setEditingExpense,onDelete:deleteExpense}} />}
+      {view==="week" && <WeekView {...{selectedDate,setSelectedDate,expenses,categories,currency,today}} />}
+      {view==="month" && <MonthView {...{calendarMonth,setCalendarMonth,expenses,categories,currency,profile,today}} />}
+      {view==="year" && <YearView {...{calendarMonth,setCalendarMonth,expenses,categories,currency,today}} />}
+      {view==="calendar" && <CalendarView {...{calendarMonth,setCalendarMonth,today,setSelectedDate,setView,expenses,categories,currency}} />}
+      {view==="settings" && <SettingsView {...{categories,updateCategories,profile,updateProfile,onReset:()=>{
+        if (confirm("Delete ALL expenses? Cannot be undone.")) {
+          setExpenses([]); saveData("expenses", []);
+        }
+      },onResetCats:()=>{
+        if (confirm("Reset categories to defaults? Your expenses won't be deleted.")) {
+          setCategories(defaultCategories); saveData("categories", defaultCategories);
+        }
+      }}} />}
+
+      {(showAddForm || editingExpense) && (
+        <ExpenseForm
+          expense={editingExpense}
+          categories={categories}
+          currency={currency}
+          defaultDate={fmtDate(selectedDate)}
+          onSave={(entry) => {
+            if (editingExpense) updateExpense(editingExpense.id, entry);
+            else addExpense(entry);
+            setShowAddForm(false);
+            setEditingExpense(null);
+          }}
+          onCancel={() => { setShowAddForm(false); setEditingExpense(null); }}
+          onDelete={editingExpense ? () => {
+            if (confirm("Delete this expense?")) {
+              deleteExpense(editingExpense.id);
+              setEditingExpense(null);
+            }
+          } : null}
+        />
+      )}
+
+      {saving && <div style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"#1a1a1a",border:"1px solid #333",padding:"6px 14px",borderRadius:99,fontSize:10,color:"#888",letterSpacing:2,zIndex:50}}>SAVING...</div>}
+    </div>
+  );
+}
+
+// ====== EXPENSE FORM ======
+function ExpenseForm({ expense, categories, currency, defaultDate, onSave, onCancel, onDelete }) {
+  const [amount, setAmount] = useState(expense?.amount || "");
+  const [categoryId, setCategoryId] = useState(expense?.categoryId || categories[0]?.id);
+  const [date, setDate] = useState(expense?.date || defaultDate);
+  const [note, setNote] = useState(expense?.note || "");
+
+  const save = () => {
+    const amt = parseFloat(amount);
+    if (!amt || amt <= 0) { alert("Enter a valid amount"); return; }
+    if (!categoryId) { alert("Pick a category"); return; }
+    onSave({ amount: amt, categoryId, date, note: note.trim() });
+  };
+
+  return (
+    <div onClick={onCancel} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:100,display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
+      <div onClick={(e)=>e.stopPropagation()} style={{background:"#111",border:"1px solid #333",borderTopLeftRadius:16,borderTopRightRadius:16,padding:20,maxWidth:520,width:"100%",maxHeight:"92vh",overflowY:"auto"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+          <div style={{fontSize:10,color:"#555",letterSpacing:3}}>{expense?"EDIT EXPENSE":"NEW EXPENSE"}</div>
+          <button onClick={onCancel} style={{background:"transparent",border:"none",color:"#666",fontSize:22}}>✕</button>
+        </div>
+
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:9,color:"#555",letterSpacing:2,marginBottom:6}}>AMOUNT ({currency})</div>
+          <input type="number" step="0.01" min="0" value={amount} onChange={(e)=>setAmount(e.target.value)} placeholder="0.00" autoFocus
+            style={{fontSize:24,fontFamily:"'Bebas Neue',sans-serif",padding:"14px 12px"}} />
+        </div>
+
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:9,color:"#555",letterSpacing:2,marginBottom:6}}>CATEGORY</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(95px,1fr))",gap:6}}>
+            {categories.map(c => (
+              <button key={c.id} onClick={()=>setCategoryId(c.id)} style={{
+                padding:"10px 6px",
+                background: categoryId===c.id ? c.color : "#1a1a1a",
+                color: categoryId===c.id ? "#000" : "#888",
+                border: `1px solid ${categoryId===c.id ? c.color : "#2a2a2a"}`,
+                borderRadius: 6, fontSize: 10, letterSpacing: 1,
+                fontWeight: categoryId===c.id ? 700 : 400,
+                display:"flex",flexDirection:"column",alignItems:"center",gap:4,
+              }}>
+                <span style={{fontSize:18}}>{c.icon}</span>
+                <span style={{fontSize:9,lineHeight:1.2,textAlign:"center"}}>{c.name}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:9,color:"#555",letterSpacing:2,marginBottom:6}}>DATE</div>
+          <input type="date" value={date} onChange={(e)=>setDate(e.target.value)} />
+        </div>
+
+        <div style={{marginBottom:18}}>
+          <div style={{fontSize:9,color:"#555",letterSpacing:2,marginBottom:6}}>NOTE (OPTIONAL)</div>
+          <input value={note} onChange={(e)=>setNote(e.target.value)} placeholder="e.g. lunch with friends" />
+        </div>
+
+        <div style={{display:"flex",gap:6}}>
+          <button onClick={onCancel} style={{flex:1,padding:12,background:"transparent",border:"1px solid #333",color:"#888",borderRadius:4,fontSize:11,letterSpacing:2}}>CANCEL</button>
+          {onDelete && <button onClick={onDelete} style={{padding:"12px 16px",background:"transparent",border:"1px solid #331a1a",color:"#a44",borderRadius:4,fontSize:11,letterSpacing:2}}>DELETE</button>}
+          <button onClick={save} style={{flex:2,padding:12,background:"#34D399",color:"#000",border:"none",borderRadius:4,fontSize:11,letterSpacing:2,fontWeight:700}}>{expense?"SAVE":"ADD"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ====== DATE NAV ======
+function DateNav({ selectedDate, setSelectedDate, isToday }) {
+  return (
+    <>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,gap:8}}>
+        <button onClick={()=>{const d=new Date(selectedDate);d.setDate(d.getDate()-1);setSelectedDate(d);}} style={{background:"#161616",border:"1px solid #222",color:"#888",padding:"8px 14px",borderRadius:4,fontSize:14}}>‹</button>
+        <div style={{textAlign:"center",flex:1}}>
+          <div style={{fontSize:10,color:"#555",letterSpacing:3}}>{isToday?"TODAY":selectedDate.toLocaleDateString(undefined,{weekday:"long"}).toUpperCase()}</div>
+          <div style={{fontSize:13,color:"#aaa",marginTop:2}}>{monthNames[selectedDate.getMonth()]} {selectedDate.getDate()}, {selectedDate.getFullYear()}</div>
+        </div>
+        <button onClick={()=>{const d=new Date(selectedDate);d.setDate(d.getDate()+1);setSelectedDate(d);}} style={{background:"#161616",border:"1px solid #222",color:"#888",padding:"8px 14px",borderRadius:4,fontSize:14}}>›</button>
+      </div>
+      {!isToday && <button onClick={()=>setSelectedDate(new Date())} style={{width:"100%",padding:8,background:"transparent",border:"1px dashed #333",color:"#666",fontSize:10,letterSpacing:3,borderRadius:4,marginBottom:12}}>← BACK TO TODAY</button>}
+    </>
+  );
+}
+
+// ====== DAILY VIEW ======
+function DailyView({ selectedDate, setSelectedDate, isToday, expenses, categories, currency, onEdit, onDelete }) {
+  const dateKey = fmtDate(selectedDate);
+  const dayExpenses = expenses.filter(e => e.date === dateKey).sort((a,b) => b.id - a.id);
+  const total = dayExpenses.reduce((s,e) => s+e.amount, 0);
+
+  const byCategory = {};
+  dayExpenses.forEach(e => {
+    if (!byCategory[e.categoryId]) byCategory[e.categoryId] = 0;
+    byCategory[e.categoryId] += e.amount;
+  });
+
+  const catLookup = {};
+  categories.forEach(c => catLookup[c.id] = c);
+
+  return (
+    <div className="fade-in" style={{maxWidth:720,margin:"0 auto",padding:"0 20px"}}>
+      <DateNav selectedDate={selectedDate} setSelectedDate={setSelectedDate} isToday={isToday} />
+
+      <div style={{background:"#111",border:"1px solid #1e1e1e",borderLeft:"3px solid #34D399",borderRadius:8,padding:"16px 18px",marginBottom:12}}>
+        <div style={{fontSize:9,color:"#555",letterSpacing:3}}>TOTAL TODAY</div>
+        <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:38,color:"#fff",lineHeight:1,marginTop:4}}>{fmtMoney(total, currency)}</div>
+        <div style={{fontSize:11,color:"#666",marginTop:4}}>{dayExpenses.length} {dayExpenses.length===1?"expense":"expenses"}</div>
+      </div>
+
+      {Object.keys(byCategory).length > 0 && (
+        <div style={{background:"#111",border:"1px solid #1e1e1e",borderRadius:8,padding:14,marginBottom:14}}>
+          <div style={{fontSize:10,color:"#555",letterSpacing:3,marginBottom:10}}>BY CATEGORY</div>
+          {Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).map(([catId, amt]) => {
+            const cat = catLookup[catId] || { name:"Unknown", icon:"❓", color:"#666" };
+            const pct = (amt/total)*100;
+            return (
+              <div key={catId} style={{marginBottom:8}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                  <span style={{fontSize:12,color:"#ddd"}}>{cat.icon} {cat.name}</span>
+                  <span style={{fontSize:12,color:cat.color,fontFamily:"'Bebas Neue',sans-serif"}}>{fmtMoney(amt, currency)}</span>
+                </div>
+                <div style={{background:"#222",height:3,borderRadius:99,overflow:"hidden"}}>
+                  <div style={{width:`${pct}%`,height:"100%",background:cat.color}} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {dayExpenses.length === 0 && (
+        <div style={{background:"#111",border:"1px solid #1e1e1e",borderRadius:8,padding:"40px 20px",textAlign:"center"}}>
+          <div style={{fontSize:36,marginBottom:8}}>💸</div>
+          <div style={{fontSize:11,letterSpacing:3,color:"#666"}}>NO EXPENSES YET</div>
+          <div style={{fontSize:11,color:"#555",marginTop:4}}>Tap +ADD to log one</div>
+        </div>
+      )}
+
+      {dayExpenses.length > 0 && (
+        <div>
+          <div style={{fontSize:10,color:"#555",letterSpacing:3,marginBottom:8,padding:"0 4px"}}>EXPENSES</div>
+          <div style={{display:"flex",flexDirection:"column",gap:5}}>
+            {dayExpenses.map(e => {
+              const cat = catLookup[e.categoryId] || { name:"Unknown", icon:"❓", color:"#666" };
+              return (
+                <div key={e.id} className="ex-row" onClick={()=>onEdit(e)}
+                  style={{background:"#111",border:"1px solid #1a1a1a",borderRadius:6,padding:"12px 14px",display:"flex",alignItems:"center",gap:12,transition:"all 0.2s"}}>
+                  <div style={{fontSize:24}}>{cat.icon}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,color:"#ddd"}}>{cat.name}</div>
+                    {e.note && <div style={{fontSize:10,color:"#666",marginTop:2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{e.note}</div>}
+                  </div>
+                  <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:18,color:cat.color,whiteSpace:"nowrap"}}>{fmtMoney(e.amount, currency)}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ====== WEEK VIEW ======
+function WeekView({ selectedDate, setSelectedDate, expenses, categories, currency, today }) {
+  const weekStart = new Date(selectedDate);
+  weekStart.setDate(weekStart.getDate() - weekStart.getDay()); // Sunday start
+  const weekDays = Array.from({length:7}).map((_,i) => {
+    const d = new Date(weekStart); d.setDate(d.getDate()+i); return d;
+  });
+
+  const weekExpenses = expenses.filter(e => {
+    const d = new Date(e.date + "T00:00:00");
+    return d >= weekStart && d <= new Date(weekDays[6].getTime() + 86400000);
+  });
+
+  const total = weekExpenses.reduce((s,e) => s+e.amount, 0);
+  const dailyTotals = weekDays.map(d => {
+    const k = fmtDate(d);
+    return weekExpenses.filter(e => e.date === k).reduce((s,e) => s+e.amount, 0);
+  });
+  const maxDaily = Math.max(...dailyTotals, 1);
+
+  const byCategory = {};
+  weekExpenses.forEach(e => {
+    if (!byCategory[e.categoryId]) byCategory[e.categoryId] = 0;
+    byCategory[e.categoryId] += e.amount;
+  });
+  const catLookup = {};
+  categories.forEach(c => catLookup[c.id] = c);
+
+  const prevWeek = () => { const d = new Date(selectedDate); d.setDate(d.getDate()-7); setSelectedDate(d); };
+  const nextWeek = () => { const d = new Date(selectedDate); d.setDate(d.getDate()+7); setSelectedDate(d); };
+
+  return (
+    <div className="fade-in" style={{maxWidth:720,margin:"0 auto",padding:"0 20px"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,gap:8}}>
+        <button onClick={prevWeek} style={{background:"#161616",border:"1px solid #222",color:"#888",padding:"8px 14px",borderRadius:4,fontSize:14}}>‹</button>
+        <div style={{textAlign:"center",flex:1}}>
+          <div style={{fontSize:10,color:"#555",letterSpacing:3}}>WEEK</div>
+          <div style={{fontSize:13,color:"#aaa",marginTop:2}}>
+            {monthShort[weekStart.getMonth()]} {weekStart.getDate()} – {monthShort[weekDays[6].getMonth()]} {weekDays[6].getDate()}
+          </div>
+        </div>
+        <button onClick={nextWeek} style={{background:"#161616",border:"1px solid #222",color:"#888",padding:"8px 14px",borderRadius:4,fontSize:14}}>›</button>
+      </div>
+
+      <div style={{background:"#111",border:"1px solid #1e1e1e",borderLeft:"3px solid #4ECDC4",borderRadius:8,padding:"16px 18px",marginBottom:12}}>
+        <div style={{fontSize:9,color:"#555",letterSpacing:3}}>WEEKLY TOTAL</div>
+        <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:38,color:"#fff",lineHeight:1,marginTop:4}}>{fmtMoney(total, currency)}</div>
+        <div style={{fontSize:11,color:"#666",marginTop:4}}>avg {fmtMoney(total/7, currency)}/day</div>
+      </div>
+
+      {/* Daily bar chart */}
+      <div style={{background:"#111",border:"1px solid #1e1e1e",borderRadius:8,padding:14,marginBottom:12}}>
+        <div style={{fontSize:10,color:"#555",letterSpacing:3,marginBottom:14}}>DAILY BREAKDOWN</div>
+        <div style={{display:"flex",alignItems:"flex-end",gap:6,height:140,marginBottom:8}}>
+          {weekDays.map((d, i) => {
+            const amt = dailyTotals[i];
+            const h = maxDaily > 0 ? (amt/maxDaily)*100 : 0;
+            const isToday = fmtDate(d) === fmtDate(today);
+            return (
+              <div key={i} onClick={()=>setSelectedDate(d)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4,cursor:"pointer"}}>
+                <div style={{fontSize:9,color:amt>0?"#4ECDC4":"#444",fontFamily:"'Bebas Neue',sans-serif",height:14}}>
+                  {amt > 0 ? fmtMoneyShort(amt, currency).replace(currency,'') : ""}
+                </div>
+                <div style={{flex:1,width:"100%",background:"#1a1a1a",borderRadius:4,position:"relative",overflow:"hidden",minHeight:4,display:"flex",alignItems:"flex-end"}}>
+                  <div style={{width:"100%",background:isToday?"#4ECDC4":"#4ECDC499",height:`${Math.max(h,2)}%`,transition:"height 0.3s",borderRadius:4}} />
+                </div>
+                <div style={{fontSize:9,color:isToday?"#fff":"#666",letterSpacing:1,fontWeight:isToday?700:400}}>{dayShort[d.getDay()]}</div>
+                <div style={{fontSize:9,color:"#555"}}>{d.getDate()}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* By category */}
+      {Object.keys(byCategory).length > 0 && (
+        <div style={{background:"#111",border:"1px solid #1e1e1e",borderRadius:8,padding:14}}>
+          <div style={{fontSize:10,color:"#555",letterSpacing:3,marginBottom:10}}>BY CATEGORY</div>
+          {Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).map(([catId, amt]) => {
+            const cat = catLookup[catId] || { name:"Unknown", icon:"❓", color:"#666" };
+            const pct = (amt/total)*100;
+            return (
+              <div key={catId} style={{marginBottom:10}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                  <span style={{fontSize:12,color:"#ddd"}}>{cat.icon} {cat.name}</span>
+                  <span style={{fontSize:13,color:cat.color,fontFamily:"'Bebas Neue',sans-serif"}}>{fmtMoney(amt, currency)}</span>
+                </div>
+                <div style={{background:"#222",height:3,borderRadius:99,overflow:"hidden"}}>
+                  <div style={{width:`${pct}%`,height:"100%",background:cat.color}} />
+                </div>
+                <div style={{fontSize:9,color:"#555",marginTop:2}}>{pct.toFixed(0)}% of week</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ====== MONTH VIEW ======
+function MonthView({ calendarMonth, setCalendarMonth, expenses, categories, currency, profile, today }) {
+  const year = calendarMonth.getFullYear();
+  const month = calendarMonth.getMonth();
+  const monthExpenses = expenses.filter(e => {
+    const d = new Date(e.date + "T00:00:00");
+    return d.getFullYear() === year && d.getMonth() === month;
+  });
+  const total = monthExpenses.reduce((s,e) => s+e.amount, 0);
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+  const today_ = today.getFullYear()===year && today.getMonth()===month ? today.getDate() : daysInMonth;
+  const dailyAvg = total / today_;
+
+  const byCategory = {};
+  monthExpenses.forEach(e => {
+    if (!byCategory[e.categoryId]) byCategory[e.categoryId] = 0;
+    byCategory[e.categoryId] += e.amount;
+  });
+  const catLookup = {};
+  categories.forEach(c => catLookup[c.id] = c);
+
+  const budget = profile.monthlyBudget || 0;
+  const budgetPct = budget > 0 ? Math.round((total/budget)*100) : 0;
+  const budgetLeft = budget - total;
+
+  const prevMonth = () => { const d = new Date(calendarMonth); d.setMonth(d.getMonth()-1); setCalendarMonth(d); };
+  const nextMonth = () => { const d = new Date(calendarMonth); d.setMonth(d.getMonth()+1); setCalendarMonth(d); };
+
+  // Daily expenses for heatmap
+  const dailyTotals = Array.from({length: daysInMonth}).map((_,i) => {
+    const k = fmtDate(new Date(year, month, i+1));
+    return monthExpenses.filter(e => e.date === k).reduce((s,e) => s+e.amount, 0);
+  });
+  const maxDaily = Math.max(...dailyTotals, 1);
+
+  return (
+    <div className="fade-in" style={{maxWidth:720,margin:"0 auto",padding:"0 20px"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,gap:8}}>
+        <button onClick={prevMonth} style={{background:"#161616",border:"1px solid #222",color:"#888",padding:"8px 14px",borderRadius:4,fontSize:14}}>‹</button>
+        <div style={{textAlign:"center",flex:1}}>
+          <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:22,letterSpacing:3,color:"#fff"}}>{monthNames[month].toUpperCase()}</div>
+          <div style={{fontSize:10,color:"#555",letterSpacing:3}}>{year}</div>
+        </div>
+        <button onClick={nextMonth} style={{background:"#161616",border:"1px solid #222",color:"#888",padding:"8px 14px",borderRadius:4,fontSize:14}}>›</button>
+      </div>
+
+      <div style={{background:"#111",border:"1px solid #1e1e1e",borderLeft:"3px solid #A78BFA",borderRadius:8,padding:"16px 18px",marginBottom:12}}>
+        <div style={{fontSize:9,color:"#555",letterSpacing:3}}>MONTH TOTAL</div>
+        <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:38,color:"#fff",lineHeight:1,marginTop:4}}>{fmtMoney(total, currency)}</div>
+        <div style={{fontSize:11,color:"#666",marginTop:4}}>avg {fmtMoney(dailyAvg, currency)}/day · {monthExpenses.length} expenses</div>
+
+        {budget > 0 && (
+          <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid #222"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:6}}>
+              <span style={{fontSize:9,color:"#555",letterSpacing:2}}>BUDGET</span>
+              <span style={{fontSize:11,color:budgetLeft>=0?"#34D399":"#FF6B6B"}}>{fmtMoney(budget, currency)}</span>
+            </div>
+            <div style={{background:"#222",height:6,borderRadius:99,overflow:"hidden"}}>
+              <div style={{width:`${Math.min(100,budgetPct)}%`,height:"100%",background:budgetPct>100?"#FF6B6B":budgetPct>80?"#FFE66D":"#34D399",transition:"width 0.3s"}} />
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",marginTop:4,fontSize:10}}>
+              <span style={{color:"#666"}}>{budgetPct}% used</span>
+              <span style={{color:budgetLeft>=0?"#34D399":"#FF6B6B"}}>
+                {budgetLeft>=0 ? `${fmtMoney(budgetLeft, currency)} left` : `${fmtMoney(-budgetLeft, currency)} over`}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Daily heatmap */}
+      <div style={{background:"#111",border:"1px solid #1e1e1e",borderRadius:8,padding:14,marginBottom:12}}>
+        <div style={{fontSize:10,color:"#555",letterSpacing:3,marginBottom:10}}>DAILY HEATMAP</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(28px,1fr))",gap:3}}>
+          {dailyTotals.map((amt, i) => {
+            const intensity = amt > 0 ? Math.min(1, amt/maxDaily) : 0;
+            const isCurrent = today.getFullYear()===year && today.getMonth()===month && today.getDate()===i+1;
+            return (
+              <div key={i} title={`Day ${i+1}: ${fmtMoney(amt, currency)}`}
+                style={{aspectRatio:"1",background:intensity>0?`rgba(167,139,250,${0.2 + intensity*0.8})`:"#1a1a1a",borderRadius:3,border:isCurrent?"1px solid #fff":"none",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:intensity>0.5?"#000":"#666"}}>
+                {i+1}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* By category */}
+      {Object.keys(byCategory).length > 0 && (
+        <div style={{background:"#111",border:"1px solid #1e1e1e",borderRadius:8,padding:14}}>
+          <div style={{fontSize:10,color:"#555",letterSpacing:3,marginBottom:10}}>SPENDING BY CATEGORY</div>
+          {Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).map(([catId, amt]) => {
+            const cat = catLookup[catId] || { name:"Unknown", icon:"❓", color:"#666", budget:0 };
+            const pct = (amt/total)*100;
+            const catBudget = cat.budget || 0;
+            const catBudgetPct = catBudget > 0 ? (amt/catBudget)*100 : 0;
+            return (
+              <div key={catId} style={{marginBottom:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                  <span style={{fontSize:12,color:"#ddd"}}>{cat.icon} {cat.name}</span>
+                  <span style={{fontSize:14,color:cat.color,fontFamily:"'Bebas Neue',sans-serif"}}>{fmtMoney(amt, currency)}</span>
+                </div>
+                <div style={{background:"#222",height:3,borderRadius:99,overflow:"hidden"}}>
+                  <div style={{width:`${pct}%`,height:"100%",background:cat.color}} />
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",marginTop:2,fontSize:9,color:"#555"}}>
+                  <span>{pct.toFixed(0)}% of total</span>
+                  {catBudget > 0 && <span style={{color:catBudgetPct>100?"#FF6B6B":"#666"}}>budget {fmtMoney(catBudget, currency)} ({catBudgetPct.toFixed(0)}%)</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ====== YEAR VIEW ======
+function YearView({ calendarMonth, setCalendarMonth, expenses, categories, currency, today }) {
+  const year = calendarMonth.getFullYear();
+  const yearExpenses = expenses.filter(e => new Date(e.date+"T00:00:00").getFullYear() === year);
+  const total = yearExpenses.reduce((s,e) => s+e.amount, 0);
+
+  const monthlyTotals = Array.from({length:12}).map((_,m) => {
+    return yearExpenses.filter(e => new Date(e.date+"T00:00:00").getMonth() === m).reduce((s,e) => s+e.amount, 0);
+  });
+  const maxMonthly = Math.max(...monthlyTotals, 1);
+
+  const byCategory = {};
+  yearExpenses.forEach(e => {
+    if (!byCategory[e.categoryId]) byCategory[e.categoryId] = 0;
+    byCategory[e.categoryId] += e.amount;
+  });
+  const catLookup = {};
+  categories.forEach(c => catLookup[c.id] = c);
+
+  const monthsWithData = monthlyTotals.filter(m => m > 0).length;
+  const monthlyAvg = monthsWithData > 0 ? total/monthsWithData : 0;
+
+  return (
+    <div className="fade-in" style={{maxWidth:720,margin:"0 auto",padding:"0 20px"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,gap:8}}>
+        <button onClick={()=>{const d=new Date(calendarMonth);d.setFullYear(d.getFullYear()-1);setCalendarMonth(d);}} style={{background:"#161616",border:"1px solid #222",color:"#888",padding:"8px 14px",borderRadius:4,fontSize:14}}>‹</button>
+        <div style={{textAlign:"center",flex:1}}>
+          <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,letterSpacing:3,color:"#fff"}}>{year}</div>
+        </div>
+        <button onClick={()=>{const d=new Date(calendarMonth);d.setFullYear(d.getFullYear()+1);setCalendarMonth(d);}} style={{background:"#161616",border:"1px solid #222",color:"#888",padding:"8px 14px",borderRadius:4,fontSize:14}}>›</button>
+      </div>
+
+      <div style={{background:"#111",border:"1px solid #1e1e1e",borderLeft:"3px solid #FFE66D",borderRadius:8,padding:"16px 18px",marginBottom:12}}>
+        <div style={{fontSize:9,color:"#555",letterSpacing:3}}>YEAR TOTAL</div>
+        <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:38,color:"#fff",lineHeight:1,marginTop:4}}>{fmtMoney(total, currency)}</div>
+        <div style={{fontSize:11,color:"#666",marginTop:4}}>avg {fmtMoney(monthlyAvg, currency)}/month · {yearExpenses.length} expenses</div>
+      </div>
+
+      {/* Monthly bar chart */}
+      <div style={{background:"#111",border:"1px solid #1e1e1e",borderRadius:8,padding:14,marginBottom:12}}>
+        <div style={{fontSize:10,color:"#555",letterSpacing:3,marginBottom:14}}>MONTHLY TREND</div>
+        <div style={{display:"flex",alignItems:"flex-end",gap:4,height:160,marginBottom:8}}>
+          {monthlyTotals.map((amt, i) => {
+            const h = maxMonthly > 0 ? (amt/maxMonthly)*100 : 0;
+            const isCurrent = year===today.getFullYear() && i===today.getMonth();
+            return (
+              <div key={i} onClick={()=>{const d=new Date(year,i,1);setCalendarMonth(d);}} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4,cursor:"pointer"}}>
+                <div style={{fontSize:8,color:amt>0?"#FFE66D":"#444",fontFamily:"'Bebas Neue',sans-serif",height:14,letterSpacing:1}}>
+                  {amt > 0 ? fmtMoneyShort(amt, currency).replace(currency,'') : ""}
+                </div>
+                <div style={{flex:1,width:"100%",background:"#1a1a1a",borderRadius:3,position:"relative",overflow:"hidden",minHeight:4,display:"flex",alignItems:"flex-end"}}>
+                  <div style={{width:"100%",background:isCurrent?"#FFE66D":"#FFE66D99",height:`${Math.max(h,2)}%`,transition:"height 0.3s",borderRadius:3}} />
+                </div>
+                <div style={{fontSize:9,color:isCurrent?"#fff":"#666",fontWeight:isCurrent?700:400}}>{monthShort[i].slice(0,1)}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Yearly category summary */}
+      {Object.keys(byCategory).length > 0 && (
+        <div style={{background:"#111",border:"1px solid #1e1e1e",borderRadius:8,padding:14}}>
+          <div style={{fontSize:10,color:"#555",letterSpacing:3,marginBottom:10}}>CATEGORY TOTALS</div>
+          {Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).map(([catId, amt]) => {
+            const cat = catLookup[catId] || { name:"Unknown", icon:"❓", color:"#666" };
+            const pct = (amt/total)*100;
+            return (
+              <div key={catId} style={{marginBottom:10}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                  <span style={{fontSize:12,color:"#ddd"}}>{cat.icon} {cat.name}</span>
+                  <span style={{fontSize:14,color:cat.color,fontFamily:"'Bebas Neue',sans-serif"}}>{fmtMoney(amt, currency)}</span>
+                </div>
+                <div style={{background:"#222",height:3,borderRadius:99,overflow:"hidden"}}>
+                  <div style={{width:`${pct}%`,height:"100%",background:cat.color}} />
+                </div>
+                <div style={{fontSize:9,color:"#555",marginTop:2}}>
+                  {pct.toFixed(0)}% · avg {fmtMoney(amt/12, currency)}/month
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ====== CALENDAR VIEW ======
+function CalendarView({ calendarMonth, setCalendarMonth, today, setSelectedDate, setView, expenses, categories, currency }) {
+  const buildCalendar = () => {
+    const year = calendarMonth.getFullYear();
+    const month = calendarMonth.getMonth();
+    const firstDay = new Date(year, month, 1).getDay();
+    const daysInMonth = new Date(year, month+1, 0).getDate();
+    const cells = [];
+    for (let i=0; i<firstDay; i++) cells.push(null);
+    for (let d=1; d<=daysInMonth; d++) cells.push(new Date(year, month, d));
+    return cells;
+  };
+
+  const dayTotal = (date) => {
+    if (!date) return 0;
+    const k = fmtDate(date);
+    return expenses.filter(e => e.date === k).reduce((s,e) => s+e.amount, 0);
+  };
+
+  const allTotals = buildCalendar().filter(d=>d).map(dayTotal);
+  const maxAmt = Math.max(...allTotals, 1);
+
+  return (
+    <div className="fade-in" style={{maxWidth:720,margin:"0 auto",padding:"0 20px"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <button onClick={()=>{const d=new Date(calendarMonth);d.setMonth(d.getMonth()-1);setCalendarMonth(d);}} style={{background:"#161616",border:"1px solid #222",color:"#888",padding:"8px 14px",borderRadius:4}}>‹</button>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:22,letterSpacing:3,color:"#fff"}}>{monthNames[calendarMonth.getMonth()].toUpperCase()}</div>
+          <div style={{fontSize:10,color:"#555",letterSpacing:3}}>{calendarMonth.getFullYear()}</div>
+        </div>
+        <button onClick={()=>{const d=new Date(calendarMonth);d.setMonth(d.getMonth()+1);setCalendarMonth(d);}} style={{background:"#161616",border:"1px solid #222",color:"#888",padding:"8px 14px",borderRadius:4}}>›</button>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:6}}>
+        {dayShort.map((d,i)=>(<div key={i} style={{textAlign:"center",fontSize:10,color:"#555",letterSpacing:2}}>{d}</div>))}
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4}}>
+        {buildCalendar().map((date,i)=>{
+          if (!date) return <div key={i} />;
+          const amt = dayTotal(date);
+          const intensity = amt > 0 ? Math.min(1, amt/maxAmt) : 0;
+          const isCurrentDay = fmtDate(date) === fmtDate(today);
+          return (
+            <button key={i} onClick={()=>{setSelectedDate(date);setView("today");}} style={{
+              aspectRatio:"1",
+              background: amt > 0 ? `rgba(52,211,153,${0.15 + intensity*0.6})` : "#111",
+              border:`1px solid ${isCurrentDay?"#fff":"#1a1a1a"}`,
+              borderRadius:4,padding:4,
+              display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+              color:"#888"
+            }}>
+              <div style={{fontSize:13,color:isCurrentDay?"#fff":amt>0?"#000":"#aaa",fontWeight:isCurrentDay?700:400}}>{date.getDate()}</div>
+              {amt > 0 && <div style={{fontSize:8,color:"#000",marginTop:1,fontFamily:"'Bebas Neue',sans-serif"}}>{fmtMoneyShort(amt, currency).replace(currency,'')}</div>}
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{marginTop:16,padding:12,background:"#111",border:"1px solid #1a1a1a",borderRadius:6,fontSize:10,color:"#666"}}>
+        Tap any day to view expenses or add new ones.
+      </div>
+    </div>
+  );
+}
+
+// ====== SETTINGS / CATEGORIES VIEW ======
+function SettingsView({ categories, updateCategories, profile, updateProfile, onReset, onResetCats }) {
+  const [editingCat, setEditingCat] = useState(null);
+  const [addingCat, setAddingCat] = useState(false);
+  const [local, setLocal] = useState(profile);
+  useEffect(()=>setLocal(profile),[profile]);
+
+  const update = (field, value) => { const newP = { ...local, [field]: value }; setLocal(newP); updateProfile(newP); };
+
+  const saveCategory = (cat) => {
+    if (editingCat) {
+      const updated = categories.map(c => c.id === editingCat.id ? cat : c);
+      updateCategories(updated);
+    } else {
+      const newCat = { ...cat, id: `custom_${Date.now()}` };
+      updateCategories([...categories, newCat]);
+    }
+    setEditingCat(null);
+    setAddingCat(false);
+  };
+
+  const deleteCategory = (id) => {
+    if (categories.length <= 1) { alert("You need at least 1 category"); return; }
+    if (confirm("Delete this category? Existing expenses will be marked Unknown.")) {
+      updateCategories(categories.filter(c => c.id !== id));
+      setEditingCat(null);
+    }
+  };
+
+  return (
+    <div className="fade-in" style={{maxWidth:720,margin:"0 auto",padding:"0 20px"}}>
+      <div style={{fontSize:10,color:"#555",letterSpacing:3,marginBottom:10}}>PREFERENCES</div>
+      <div style={{background:"#111",border:"1px solid #1e1e1e",borderRadius:8,padding:16,marginBottom:14}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <div>
+            <div style={{fontSize:9,color:"#555",letterSpacing:2,marginBottom:5}}>CURRENCY</div>
+            <select value={local.currency} onChange={(e)=>update("currency",e.target.value)}>
+              <option value="₹">₹ Rupee (INR)</option>
+              <option value="$">$ Dollar (USD)</option>
+              <option value="€">€ Euro (EUR)</option>
+              <option value="£">£ Pound (GBP)</option>
+              <option value="¥">¥ Yen (JPY)</option>
+              <option value="C$">C$ CAD</option>
+              <option value="A$">A$ AUD</option>
+              <option value="د.إ">د.إ AED</option>
+            </select>
+          </div>
+          <div>
+            <div style={{fontSize:9,color:"#555",letterSpacing:2,marginBottom:5}}>MONTHLY BUDGET</div>
+            <input type="number" min="0" step="100" value={local.monthlyBudget||""} onChange={(e)=>update("monthlyBudget",parseFloat(e.target.value)||0)} placeholder="0 (none)" />
+          </div>
+        </div>
+      </div>
+
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <div style={{fontSize:10,color:"#555",letterSpacing:3}}>CATEGORIES</div>
+        <button onClick={()=>{setAddingCat(true);setEditingCat(null);}}
+          style={{background:"#34D399",color:"#000",border:"none",borderRadius:4,padding:"6px 12px",fontSize:10,letterSpacing:2,fontWeight:700}}>
+          + ADD
+        </button>
+      </div>
+
+      <div style={{display:"flex",flexDirection:"column",gap:5,marginBottom:14}}>
+        {categories.map(cat => (
+          <div key={cat.id} className="ex-row" onClick={()=>setEditingCat(cat)}
+            style={{background:"#111",border:`1px solid ${cat.color}33`,borderLeft:`3px solid ${cat.color}`,borderRadius:6,padding:"12px 14px",display:"flex",alignItems:"center",gap:12,transition:"all 0.2s"}}>
+            <div style={{fontSize:24}}>{cat.icon}</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,color:"#ddd"}}>{cat.name}</div>
+              {cat.budget > 0 && <div style={{fontSize:10,color:"#666",marginTop:2}}>budget: {fmtMoney(cat.budget, local.currency)}/month</div>}
+            </div>
+            <span style={{color:cat.color,fontSize:14}}>✎</span>
+          </div>
+        ))}
+      </div>
+
+      <button onClick={onResetCats}
+        style={{width:"100%",padding:10,background:"transparent",border:"1px solid #2a2a2a",color:"#888",fontSize:10,letterSpacing:3,borderRadius:4,marginBottom:6}}>
+        RESET CATEGORIES TO DEFAULT
+      </button>
+      <button onClick={onReset}
+        style={{width:"100%",padding:12,background:"transparent",border:"1px solid #331a1a",color:"#a44",fontSize:10,letterSpacing:3,borderRadius:4}}>
+        DELETE ALL EXPENSES
+      </button>
+
+      <div style={{textAlign:"center",marginTop:24,fontSize:9,color:"#333",letterSpacing:2}}>DATA SAVED LOCALLY · WORKS OFFLINE</div>
+
+      {(editingCat || addingCat) && (
+        <CategoryEditor
+          category={editingCat}
+          currency={local.currency}
+          onSave={saveCategory}
+          onCancel={()=>{setEditingCat(null);setAddingCat(false);}}
+          onDelete={editingCat ? ()=>deleteCategory(editingCat.id) : null}
+        />
+      )}
+    </div>
+  );
+}
+
+function CategoryEditor({ category, currency, onSave, onCancel, onDelete }) {
+  const [name, setName] = useState(category?.name || "");
+  const [icon, setIcon] = useState(category?.icon || "📦");
+  const [color, setColor] = useState(category?.color || "#34D399");
+  const [budget, setBudget] = useState(category?.budget || 0);
+
+  const colors = ["#FF6B35","#4ECDC4","#FFE66D","#A78BFA","#34D399","#F472B6","#FF6B6B","#60A5FA","#EC4899","#8B5CF6","#94A3B8","#FB923C"];
+  const icons = ["🍽","🛒","🍎","🥬","⛽","💊","🚗","💡","🛍","🎬","📚","✈️","🏠","💪","🎁","💼","📱","🐕","☕","🍺","💰","💳","📦"];
+
+  return (
+    <div onClick={onCancel} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:100,display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
+      <div onClick={(e)=>e.stopPropagation()} style={{background:"#111",border:"1px solid #333",borderTopLeftRadius:16,borderTopRightRadius:16,padding:20,maxWidth:520,width:"100%",maxHeight:"92vh",overflowY:"auto"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+          <div style={{fontSize:10,color:"#555",letterSpacing:3}}>{category?"EDIT CATEGORY":"NEW CATEGORY"}</div>
+          <button onClick={onCancel} style={{background:"transparent",border:"none",color:"#666",fontSize:22}}>✕</button>
+        </div>
+
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:9,color:"#555",letterSpacing:2,marginBottom:6}}>NAME</div>
+          <input value={name} onChange={(e)=>setName(e.target.value)} placeholder="e.g. Coffee" autoFocus />
+        </div>
+
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:9,color:"#555",letterSpacing:2,marginBottom:6}}>ICON</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(8,1fr)",gap:4}}>
+            {icons.map(em => (
+              <button key={em} onClick={()=>setIcon(em)}
+                style={{padding:8,background:icon===em?color+"33":"#1a1a1a",border:`1px solid ${icon===em?color:"#2a2a2a"}`,borderRadius:4,fontSize:18}}>
+                {em}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:9,color:"#555",letterSpacing:2,marginBottom:6}}>COLOR</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:6}}>
+            {colors.map(col => (
+              <button key={col} onClick={()=>setColor(col)}
+                style={{aspectRatio:"1",background:col,border:`2px solid ${color===col?"#fff":"transparent"}`,borderRadius:4}}/>
+            ))}
+          </div>
+        </div>
+
+        <div style={{marginBottom:18}}>
+          <div style={{fontSize:9,color:"#555",letterSpacing:2,marginBottom:6}}>MONTHLY BUDGET ({currency}, OPTIONAL)</div>
+          <input type="number" min="0" step="100" value={budget||""} onChange={(e)=>setBudget(parseFloat(e.target.value)||0)} placeholder="0" />
+        </div>
+
+        <div style={{display:"flex",gap:6}}>
+          <button onClick={onCancel} style={{flex:1,padding:12,background:"transparent",border:"1px solid #333",color:"#888",borderRadius:4,fontSize:11,letterSpacing:2}}>CANCEL</button>
+          {onDelete && <button onClick={onDelete} style={{padding:"12px 16px",background:"transparent",border:"1px solid #331a1a",color:"#a44",borderRadius:4,fontSize:11,letterSpacing:2}}>DELETE</button>}
+          <button onClick={()=>{ if(name.trim()) onSave({...(category||{}),name:name.trim(),icon,color,budget}); }}
+            style={{flex:2,padding:12,background:color,color:"#000",border:"none",borderRadius:4,fontSize:11,letterSpacing:2,fontWeight:700}}>
+            {category?"SAVE":"ADD"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<ExpenseLog />);
+</script>
+</body>
+</html>
